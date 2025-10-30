@@ -68,26 +68,17 @@ const PORT = process.env.PORT || 5000;
 
 
 async function authenticateToken(req, res, next) {
-    const authHeader = req.headers["authorization"] || "";
-    const headerToken = authHeader && authHeader.split(" ")[1];
-    const cookieToken = req.cookies && req.cookies[process.env.COOKIE_NAME];
-    const clientCookieToken = req.cookies && req.cookies[`${process.env.COOKIE_NAME}_client`];
-    const token = headerToken || cookieToken || clientCookieToken;
-
-    console.log("Auth check - Header token:", headerToken ? "Present" : "Missing");
-    console.log("Auth check - HttpOnly cookie token:", cookieToken ? "Present" : "Missing");
-    console.log("Auth check - Client cookie token:", clientCookieToken ? "Present" : "Missing");
-    console.log("Auth check - All cookies received:", Object.keys(req.cookies || {}));
+    // Get token from Authorization header
+    const authHeader = req.headers["authorization"];
+    const token = authHeader && authHeader.startsWith("Bearer ") ? authHeader.slice(7) : null;
 
     if (!token) {
-        console.log("No token found in request");
         return res.status(401).json({ message: "Invalid or no token found" });
     }
 
     try {
         const decoded = jwt.verify(token, process.env.JWT_SECRET);
         req.user = decoded;
-        console.log("Token verified successfully for user:", decoded.email);
         next();
     } catch (err) {
         console.error("Token verification error:", err);
@@ -95,58 +86,7 @@ async function authenticateToken(req, res, next) {
     }
 }
 
-function generateTokenAndSetCookie(user, res) {
-    const token = jwt.sign(
-        { id: user.id, email: user.email },
-        process.env.JWT_SECRET,
-        { expiresIn: "24h" }
-    );
-
-    const isProduction = process.env.NODE_ENV === "production";
-
-    console.log("Setting cookie - Production mode:", isProduction);
-    console.log("Setting cookie - Frontend URL:", process.env.FRONTEND_URL);
-
-    // For production, we need to handle cross-origin cookies carefully
-    if (isProduction) {
-        // Set httpOnly cookie (for same-origin requests)
-        res.cookie(process.env.COOKIE_NAME, token, {
-            maxAge: 24 * 60 * 60 * 1000,
-            httpOnly: true,
-            sameSite: "none",
-            secure: true,
-            path: "/",
-        });
-
-        // Set non-httpOnly cookie that frontend can read (for cross-origin)
-        res.cookie(`${process.env.COOKIE_NAME}_client`, token, {
-            maxAge: 24 * 60 * 60 * 1000,
-            httpOnly: false, // Frontend can read this
-            sameSite: "none",
-            secure: true,
-            path: "/",
-        });
-    } else {
-        // Development settings
-        res.cookie(process.env.COOKIE_NAME, token, {
-            maxAge: 24 * 60 * 60 * 1000,
-            httpOnly: true,
-            sameSite: "lax",
-            secure: false,
-            path: "/",
-        });
-
-        res.cookie(`${process.env.COOKIE_NAME}_client`, token, {
-            maxAge: 24 * 60 * 60 * 1000,
-            httpOnly: false,
-            sameSite: "lax",
-            secure: false,
-            path: "/",
-        });
-    }
-
-    return token;
-}
+// Removed complex cookie handling - using simple token-based auth
 
 
 
@@ -191,44 +131,32 @@ app.get("/debug/oauth-config", (req, res) => {
 });
 
 app.get("/auth/google/callback",
-    (req, res, next) => {
-        console.log("=== OAuth Callback Route Hit ===");
-        console.log("Query params:", req.query);
-        console.log("User agent:", req.headers['user-agent']);
-        next();
-    },
     passport.authenticate("google", {
         failureRedirect: `${process.env.FRONTEND_URL}/login?error=oauth_failed`,
         session: false
     }),
     (req, res) => {
         try {
-            console.log("=== Google OAuth Callback ===");
-            console.log("User data received:", req.user ? "Yes" : "No");
-            console.log("User email:", req.user?.email);
-            console.log("User ID:", req.user?.id);
+            console.log("OAuth Success - User:", req.user?.email);
 
             if (!req.user) {
-                console.error("No user data received from Google OAuth");
-                return res.redirect(`${process.env.FRONTEND_URL}/login?error=no_user_data`);
+                return res.redirect(`${process.env.FRONTEND_URL}/login?error=no_user`);
             }
 
-            const token = generateTokenAndSetCookie(req.user, res);
-            console.log("Token generated successfully, length:", token.length);
+            // Generate simple JWT token
+            const token = jwt.sign(
+                { id: req.user.id, email: req.user.email },
+                process.env.JWT_SECRET,
+                { expiresIn: "24h" }
+            );
 
-            // Redirect with token as URL parameter - the TokenHandler will process it
-            const redirectUrl = `${process.env.FRONTEND_URL}/dashboard?token=${encodeURIComponent(token)}`;
-            console.log("Redirecting to:", redirectUrl);
+            console.log("Token generated, redirecting to success page");
 
-            res.redirect(redirectUrl);
+            // Simple redirect with token
+            res.redirect(`${process.env.FRONTEND_URL}/auth/success?token=${token}`);
         } catch (error) {
-            console.error("Error in Google OAuth callback:", error);
-
-            if (error.message && error.message.includes("migration required")) {
-                res.redirect(`${process.env.FRONTEND_URL}/login?error=migration_required`);
-            } else {
-                res.redirect(`${process.env.FRONTEND_URL}/login?error=oauth_callback_failed`);
-            }
+            console.error("OAuth callback error:", error);
+            res.redirect(`${process.env.FRONTEND_URL}/login?error=callback_failed`);
         }
     }
 );
@@ -320,12 +248,16 @@ app.post("/auth/login", async (req, res) => {
             return res.status(400).json({ message: "Invalid credentials" });
         }
 
-        // Generate token and set cookie using helper function
-        const token = generateTokenAndSetCookie(user, res);
+        // Generate simple JWT token
+        const token = jwt.sign(
+            { id: user.id, email: user.email },
+            process.env.JWT_SECRET,
+            { expiresIn: "24h" }
+        );
 
         res.status(200).json({
             message: "Login successful",
-            token: token, // Include token in response for cross-origin issues
+            token: token,
             user: {
                 id: user.id,
                 name: user.name,
@@ -340,23 +272,7 @@ app.post("/auth/login", async (req, res) => {
 });
 
 app.post("/auth/logout", (req, res) => {
-    const isProduction = process.env.NODE_ENV === "production";
-
-    // Clear both cookies
-    res.clearCookie(process.env.COOKIE_NAME, {
-        httpOnly: true,
-        sameSite: isProduction ? "none" : "lax",
-        secure: isProduction,
-        path: "/",
-    });
-
-    res.clearCookie(`${process.env.COOKIE_NAME}_client`, {
-        httpOnly: false,
-        sameSite: isProduction ? "none" : "lax",
-        secure: isProduction,
-        path: "/",
-    });
-
+    // With token-based auth, logout is handled on frontend by removing token
     res.status(200).json({ message: "logout successful" });
 });
 
@@ -501,38 +417,18 @@ app.post("/auth/reset-password", async (req, res) => {
         res.status(500).json({ message: "Internal server error" });
     }
 });
-app.get("/auth/me", async (req, res) => {
+app.get("/auth/me", authenticateToken, async (req, res) => {
     try {
-        // Check multiple token sources
-        const authHeader = req.headers["authorization"] || "";
-        const headerToken = authHeader && authHeader.split(" ")[1];
-        const cookieToken = req.cookies && req.cookies[process.env.COOKIE_NAME];
-        const clientCookieToken = req.cookies && req.cookies[`${process.env.COOKIE_NAME}_client`];
-
-        const token = headerToken || cookieToken || clientCookieToken;
-
-        console.log("Auth me - Header token:", headerToken ? "Present" : "Missing");
-        console.log("Auth me - HttpOnly cookie token:", cookieToken ? "Present" : "Missing");
-        console.log("Auth me - Client cookie token:", clientCookieToken ? "Present" : "Missing");
-
-        if (!token) {
-            console.log("No token found in /auth/me request");
-            return res.status(401).json({ user: null });
-        }
-
-        const decoded = jwt.verify(token, process.env.JWT_SECRET);
         const { data: user, error } = await supabase
             .from("Users")
             .select("id, name, email, created_at")
-            .eq("id", decoded.id)
+            .eq("id", req.user.id)
             .single();
 
         if (error || !user) {
-            console.log("User not found in database:", error);
             return res.status(401).json({ user: null });
         }
 
-        console.log("Auth me successful for user:", user.email);
         res.json({
             user: {
                 id: user.id,
