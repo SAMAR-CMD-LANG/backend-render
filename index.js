@@ -159,8 +159,26 @@ app.get("/auth/google", (req, res, next) => {
     })(req, res, next);
 });
 
+// Test endpoint to verify OAuth callback URL is reachable
+app.get("/auth/google/callback-test", (req, res) => {
+    console.log("=== OAuth Callback Test Reached ===");
+    console.log("Query params:", req.query);
+    res.json({
+        message: "OAuth callback test endpoint reached",
+        query: req.query,
+        timestamp: new Date().toISOString(),
+        backendUrl: process.env.BACKEND_URL,
+        frontendUrl: process.env.FRONTEND_URL
+    });
+});
 
 app.get("/auth/google/callback",
+    (req, res, next) => {
+        console.log("=== OAuth Callback Route Hit ===");
+        console.log("Query params:", req.query);
+        console.log("User agent:", req.headers['user-agent']);
+        next();
+    },
     passport.authenticate("google", {
         failureRedirect: `${process.env.FRONTEND_URL}/login?error=oauth_failed`,
         session: false
