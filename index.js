@@ -152,8 +152,8 @@ app.get("/auth/google/callback",
 
             console.log("Token generated, redirecting to success page");
 
-            // Simple redirect with token
-            res.redirect(`${process.env.FRONTEND_URL}/auth/success?token=${token}`);
+            // Temporary: redirect to dashboard with token (until /auth/success is deployed)
+            res.redirect(`${process.env.FRONTEND_URL}/dashboard?token=${token}`);
         } catch (error) {
             console.error("OAuth callback error:", error);
             res.redirect(`${process.env.FRONTEND_URL}/login?error=callback_failed`);
