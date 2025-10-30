@@ -17,12 +17,29 @@ dotenv.config();
 const app = express();
 
 
-// Simple CORS configuration
+// CORS configuration for cross-origin requests
 app.use(cors({
-    origin: [process.env.FRONTEND_URL, 'http://localhost:3000'].filter(Boolean),
+    origin: function (origin, callback) {
+        // Allow requests with no origin (like mobile apps or curl requests)
+        if (!origin) return callback(null, true);
+
+        const allowedOrigins = [
+            process.env.FRONTEND_URL,
+            'http://localhost:3000',
+            'https://localhost:3000'
+        ].filter(Boolean);
+
+        if (allowedOrigins.includes(origin)) {
+            return callback(null, true);
+        }
+
+        console.log('CORS blocked origin:', origin);
+        callback(new Error('Not allowed by CORS'));
+    },
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'Cookie'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'Cookie', 'X-Requested-With'],
+    exposedHeaders: ['Set-Cookie'],
 }));
 
 
@@ -90,23 +107,43 @@ function generateTokenAndSetCookie(user, res) {
     console.log("Setting cookie - Production mode:", isProduction);
     console.log("Setting cookie - Frontend URL:", process.env.FRONTEND_URL);
 
-    // Set httpOnly cookie (for same-origin requests)
-    res.cookie(process.env.COOKIE_NAME, token, {
-        maxAge: 24 * 60 * 60 * 1000,
-        httpOnly: true,
-        sameSite: isProduction ? "none" : "lax",
-        secure: isProduction,
-        path: "/",
-    });
+    // For production, we need to handle cross-origin cookies carefully
+    if (isProduction) {
+        // Set httpOnly cookie (for same-origin requests)
+        res.cookie(process.env.COOKIE_NAME, token, {
+            maxAge: 24 * 60 * 60 * 1000,
+            httpOnly: true,
+            sameSite: "none",
+            secure: true,
+            path: "/",
+        });
 
-    // Set non-httpOnly cookie that frontend can read (for cross-origin)
-    res.cookie(`${process.env.COOKIE_NAME}_client`, token, {
-        maxAge: 24 * 60 * 60 * 1000,
-        httpOnly: false, // Frontend can read this
-        sameSite: isProduction ? "none" : "lax",
-        secure: isProduction,
-        path: "/",
-    });
+        // Set non-httpOnly cookie that frontend can read (for cross-origin)
+        res.cookie(`${process.env.COOKIE_NAME}_client`, token, {
+            maxAge: 24 * 60 * 60 * 1000,
+            httpOnly: false, // Frontend can read this
+            sameSite: "none",
+            secure: true,
+            path: "/",
+        });
+    } else {
+        // Development settings
+        res.cookie(process.env.COOKIE_NAME, token, {
+            maxAge: 24 * 60 * 60 * 1000,
+            httpOnly: true,
+            sameSite: "lax",
+            secure: false,
+            path: "/",
+        });
+
+        res.cookie(`${process.env.COOKIE_NAME}_client`, token, {
+            maxAge: 24 * 60 * 60 * 1000,
+            httpOnly: false,
+            sameSite: "lax",
+            secure: false,
+            path: "/",
+        });
+    }
 
     return token;
 }
@@ -136,11 +173,29 @@ app.get("/auth/google/callback",
                 return res.redirect(`${process.env.FRONTEND_URL}/login?error=no_user_data`);
             }
 
-
             const token = generateTokenAndSetCookie(req.user, res);
 
-            // For cross-origin issues, include token in redirect URL
-            res.redirect(`${process.env.FRONTEND_URL}/dashboard?token=${token}`);
+            // Create a simple HTML page that handles the token and redirects
+            const redirectHTML = `
+                <!DOCTYPE html>
+                <html>
+                <head>
+                    <title>Login Success</title>
+                </head>
+                <body>
+                    <script>
+                        // Store token in localStorage
+                        localStorage.setItem('auth_token', '${token}');
+                        
+                        // Redirect to dashboard
+                        window.location.href = '${process.env.FRONTEND_URL}/dashboard';
+                    </script>
+                    <p>Login successful! Redirecting...</p>
+                </body>
+                </html>
+            `;
+
+            res.send(redirectHTML);
         } catch (error) {
             console.error("Error in Google OAuth callback:", error);
 
@@ -423,12 +478,24 @@ app.post("/auth/reset-password", async (req, res) => {
 });
 app.get("/auth/me", async (req, res) => {
     try {
+        // Check multiple token sources
+        const authHeader = req.headers["authorization"] || "";
+        const headerToken = authHeader && authHeader.split(" ")[1];
         const cookieToken = req.cookies && req.cookies[process.env.COOKIE_NAME];
-        if (!cookieToken) {
+        const clientCookieToken = req.cookies && req.cookies[`${process.env.COOKIE_NAME}_client`];
+
+        const token = headerToken || cookieToken || clientCookieToken;
+
+        console.log("Auth me - Header token:", headerToken ? "Present" : "Missing");
+        console.log("Auth me - HttpOnly cookie token:", cookieToken ? "Present" : "Missing");
+        console.log("Auth me - Client cookie token:", clientCookieToken ? "Present" : "Missing");
+
+        if (!token) {
+            console.log("No token found in /auth/me request");
             return res.status(401).json({ user: null });
         }
 
-        const decoded = jwt.verify(cookieToken, process.env.JWT_SECRET);
+        const decoded = jwt.verify(token, process.env.JWT_SECRET);
         const { data: user, error } = await supabase
             .from("Users")
             .select("id, name, email, created_at")
@@ -436,9 +503,11 @@ app.get("/auth/me", async (req, res) => {
             .single();
 
         if (error || !user) {
+            console.log("User not found in database:", error);
             return res.status(401).json({ user: null });
         }
 
+        console.log("Auth me successful for user:", user.email);
         res.json({
             user: {
                 id: user.id,
@@ -1540,61 +1609,28 @@ app.get("/health", (req, res) => {
     }
 });
 
-// Debug endpoint to check authentication
-app.get("/debug/auth", (req, res) => {
-    const authHeader = req.headers["authorization"] || "";
-    const headerToken = authHeader && authHeader.split(" ")[1];
-    const cookieToken = req.cookies && req.cookies[process.env.COOKIE_NAME];
-
+// Debug endpoint for OAuth issues
+app.get("/debug/auth", authenticateToken, (req, res) => {
     res.json({
-        hasAuthHeader: !!authHeader,
-        hasHeaderToken: !!headerToken,
-        hasCookieToken: !!cookieToken,
-        cookies: Object.keys(req.cookies || {}),
-        headers: {
-            origin: req.headers.origin,
-            referer: req.headers.referer,
-            'user-agent': req.headers['user-agent']
-        },
-        environment: process.env.NODE_ENV,
-        cookieName: process.env.COOKIE_NAME,
-        frontendUrl: process.env.FRONTEND_URL,
-        backendUrl: process.env.BACKEND_URL
+        message: "Authentication successful",
+        user: req.user,
+        timestamp: new Date().toISOString()
     });
 });
 
-// Test login endpoint for debugging
-app.post("/debug/test-login", async (req, res) => {
-    try {
-        // Create a test token
-        const testUser = { id: 1, email: 'test@example.com' };
-        const token = jwt.sign(testUser, process.env.JWT_SECRET, { expiresIn: "24h" });
-
-        const isProduction = process.env.NODE_ENV === "production";
-
-        res.cookie(process.env.COOKIE_NAME, token, {
-            maxAge: 24 * 60 * 60 * 1000,
-            httpOnly: true,
-            sameSite: isProduction ? "none" : "lax",
-            secure: isProduction,
-            path: "/",
-        });
-
-        res.json({
-            message: "Test login successful",
-            token: token,
-            user: testUser,
-            cookieSettings: {
-                sameSite: isProduction ? "none" : "lax",
-                secure: isProduction,
-                httpOnly: true
-            }
-        });
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
+// Debug cookies endpoint
+app.get("/debug/cookies", (req, res) => {
+    res.json({
+        cookies: req.cookies,
+        headers: req.headers,
+        timestamp: new Date().toISOString()
+    });
 });
 
+// Start server
 app.listen(PORT, () => {
-    console.log(`server running on port ${PORT}`);
+    console.log(`Server running on port ${PORT}`);
+    console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
+    console.log(`Frontend URL: ${process.env.FRONTEND_URL}`);
+    console.log(`Backend URL: ${process.env.BACKEND_URL}`);
 });
