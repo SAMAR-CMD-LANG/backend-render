@@ -152,11 +152,12 @@ function generateTokenAndSetCookie(user, res) {
 
 
 
-app.get("/auth/google",
+app.get("/auth/google", (req, res, next) => {
+    console.log("Google OAuth initiated from:", req.headers.referer || req.headers.origin);
     passport.authenticate("google", {
         scope: ["profile", "email"]
-    })
-);
+    })(req, res, next);
+});
 
 
 app.get("/auth/google/callback",
@@ -166,7 +167,10 @@ app.get("/auth/google/callback",
     }),
     (req, res) => {
         try {
-            console.log("Google OAuth callback - user data:", req.user); // Debug log
+            console.log("=== Google OAuth Callback ===");
+            console.log("User data received:", req.user ? "Yes" : "No");
+            console.log("User email:", req.user?.email);
+            console.log("User ID:", req.user?.id);
 
             if (!req.user) {
                 console.error("No user data received from Google OAuth");
@@ -174,36 +178,13 @@ app.get("/auth/google/callback",
             }
 
             const token = generateTokenAndSetCookie(req.user, res);
+            console.log("Token generated successfully, length:", token.length);
 
-            // Create a simple HTML page that handles the token and redirects
-            const redirectHTML = `
-                <!DOCTYPE html>
-                <html>
-                <head>
-                    <title>Login Success</title>
-                </head>
-                <body>
-                    <script>
-                        console.log('OAuth callback - storing token:', '${token}'.substring(0, 20) + '...');
-                        
-                        // Store token in localStorage
-                        localStorage.setItem('auth_token', '${token}');
-                        
-                        // Verify storage
-                        const storedToken = localStorage.getItem('auth_token');
-                        console.log('OAuth callback - token stored successfully:', !!storedToken);
-                        
-                        // Small delay to ensure storage, then redirect
-                        setTimeout(() => {
-                            window.location.href = '${process.env.FRONTEND_URL}/dashboard';
-                        }, 500);
-                    </script>
-                    <p>Login successful! Redirecting to dashboard...</p>
-                </body>
-                </html>
-            `;
+            // Redirect with token as URL parameter - the TokenHandler will process it
+            const redirectUrl = `${process.env.FRONTEND_URL}/dashboard?token=${encodeURIComponent(token)}`;
+            console.log("Redirecting to:", redirectUrl);
 
-            res.send(redirectHTML);
+            res.redirect(redirectUrl);
         } catch (error) {
             console.error("Error in Google OAuth callback:", error);
 
@@ -1670,6 +1651,43 @@ app.post("/debug/validate-token", (req, res) => {
             valid: false,
             error: error.message,
             tokenLength: token.length,
+            timestamp: new Date().toISOString()
+        });
+    }
+});
+
+// Debug user lookup endpoint
+app.post("/debug/user-lookup", async (req, res) => {
+    const { email } = req.body;
+
+    if (!email) {
+        return res.status(400).json({ error: "Email is required" });
+    }
+
+    try {
+        const { data: user, error } = await supabase
+            .from("Users")
+            .select("id, name, email, created_at")
+            .eq("email", email)
+            .single();
+
+        if (error) {
+            return res.json({
+                found: false,
+                error: error.message,
+                timestamp: new Date().toISOString()
+            });
+        }
+
+        res.json({
+            found: true,
+            user: user,
+            timestamp: new Date().toISOString()
+        });
+    } catch (error) {
+        res.json({
+            found: false,
+            error: error.message,
             timestamp: new Date().toISOString()
         });
     }
