@@ -184,13 +184,21 @@ app.get("/auth/google/callback",
                 </head>
                 <body>
                     <script>
+                        console.log('OAuth callback - storing token:', '${token}'.substring(0, 20) + '...');
+                        
                         // Store token in localStorage
                         localStorage.setItem('auth_token', '${token}');
                         
-                        // Redirect to dashboard
-                        window.location.href = '${process.env.FRONTEND_URL}/dashboard';
+                        // Verify storage
+                        const storedToken = localStorage.getItem('auth_token');
+                        console.log('OAuth callback - token stored successfully:', !!storedToken);
+                        
+                        // Small delay to ensure storage, then redirect
+                        setTimeout(() => {
+                            window.location.href = '${process.env.FRONTEND_URL}/dashboard';
+                        }, 500);
                     </script>
-                    <p>Login successful! Redirecting...</p>
+                    <p>Login successful! Redirecting to dashboard...</p>
                 </body>
                 </html>
             `;
@@ -1625,6 +1633,46 @@ app.get("/debug/cookies", (req, res) => {
         headers: req.headers,
         timestamp: new Date().toISOString()
     });
+});
+
+// Debug environment endpoint
+app.get("/debug/env", (req, res) => {
+    res.json({
+        nodeEnv: process.env.NODE_ENV,
+        frontendUrl: process.env.FRONTEND_URL,
+        backendUrl: process.env.BACKEND_URL,
+        cookieName: process.env.COOKIE_NAME,
+        hasGoogleClientId: !!process.env.GOOGLE_CLIENT_ID,
+        hasGoogleClientSecret: !!process.env.GOOGLE_CLIENT_SECRET,
+        hasJwtSecret: !!process.env.JWT_SECRET,
+        timestamp: new Date().toISOString()
+    });
+});
+
+// Debug token validation endpoint
+app.post("/debug/validate-token", (req, res) => {
+    const { token } = req.body;
+
+    if (!token) {
+        return res.status(400).json({ error: "Token is required" });
+    }
+
+    try {
+        const decoded = jwt.verify(token, process.env.JWT_SECRET);
+        res.json({
+            valid: true,
+            decoded: decoded,
+            tokenLength: token.length,
+            timestamp: new Date().toISOString()
+        });
+    } catch (error) {
+        res.json({
+            valid: false,
+            error: error.message,
+            tokenLength: token.length,
+            timestamp: new Date().toISOString()
+        });
+    }
 });
 
 // Start server
