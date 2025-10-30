@@ -153,7 +153,11 @@ function generateTokenAndSetCookie(user, res) {
 
 
 app.get("/auth/google", (req, res, next) => {
-    console.log("Google OAuth initiated from:", req.headers.referer || req.headers.origin);
+    console.log("=== Google OAuth Initiation ===");
+    console.log("Initiated from:", req.headers.referer || req.headers.origin);
+    console.log("Google Client ID available:", !!process.env.GOOGLE_CLIENT_ID);
+    console.log("Callback URL:", `${process.env.BACKEND_URL}/auth/google/callback`);
+
     passport.authenticate("google", {
         scope: ["profile", "email"]
     })(req, res, next);
@@ -168,7 +172,21 @@ app.get("/auth/google/callback-test", (req, res) => {
         query: req.query,
         timestamp: new Date().toISOString(),
         backendUrl: process.env.BACKEND_URL,
-        frontendUrl: process.env.FRONTEND_URL
+        frontendUrl: process.env.FRONTEND_URL,
+        note: "This endpoint should not be accessed directly. It's only for Google OAuth callbacks."
+    });
+});
+
+// Debug OAuth configuration
+app.get("/debug/oauth-config", (req, res) => {
+    res.json({
+        googleClientId: process.env.GOOGLE_CLIENT_ID ? 'Set' : 'Missing',
+        googleClientSecret: process.env.GOOGLE_CLIENT_SECRET ? 'Set' : 'Missing',
+        backendUrl: process.env.BACKEND_URL,
+        frontendUrl: process.env.FRONTEND_URL,
+        callbackUrl: `${process.env.BACKEND_URL}/auth/google/callback`,
+        oauthInitUrl: `${process.env.BACKEND_URL}/auth/google`,
+        timestamp: new Date().toISOString()
     });
 });
 
