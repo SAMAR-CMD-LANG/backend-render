@@ -15,13 +15,21 @@ passport.use(
     },
     async (accessToken, refreshToken, profile, done) => {
       try {
+        console.log("=== Google OAuth Strategy Callback ===");
+        console.log("Profile ID:", profile.id);
+        console.log("Profile emails:", profile.emails);
+        console.log("Profile displayName:", profile.displayName);
+
         const email = profile.emails[0]?.value;
         const name = profile.displayName;
         const profilePicture = profile.photos[0]?.value;
 
         if (!email) {
+          console.error("No email found in Google profile");
           return done(new Error("No email found in Google profile"), null);
         }
+
+        console.log("Looking for existing user with email:", email);
 
         const { data: existingUser, error: fetchError } = await supabase
           .from("Users")
@@ -30,12 +38,16 @@ passport.use(
           .single();
 
         if (existingUser && !fetchError) {
-          console.log(
-            "Google OAuth: User already exists, logging in:",
-            existingUser.email
-          );
+          console.log("Google OAuth: User already exists, logging in:", existingUser.email);
           return done(null, existingUser);
         }
+
+        if (fetchError && fetchError.code !== 'PGRST116') {
+          console.error("Database error when checking for existing user:", fetchError);
+          return done(fetchError, null);
+        }
+
+        console.log("Creating new user with email:", email);
 
         const { data: newUser, error: createError } = await supabase
           .from("Users")
@@ -43,7 +55,7 @@ passport.use(
             {
               name,
               email,
-              password: null,
+              password: null, // OAuth users don't have passwords
             },
           ])
           .select()
@@ -54,7 +66,7 @@ passport.use(
           return done(createError, null);
         }
 
-        console.log("Google OAuth: New user created:", newUser.email);
+        console.log("Google OAuth: New user created successfully:", newUser.email);
         return done(null, newUser);
       } catch (error) {
         console.error("Error in Google OAuth strategy:", error);

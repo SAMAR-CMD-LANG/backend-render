@@ -52,10 +52,10 @@ app.use(
         resave: false,
         saveUninitialized: false,
         cookie: {
-            secure: process.env.NODE_ENV === 'production', // Use secure cookies in production
+            secure: false, // Set to false for development OAuth
             httpOnly: true,
             maxAge: 24 * 60 * 60 * 1000,
-            sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax', // Allow cross-site cookies in production
+            sameSite: 'lax', // Use lax for better OAuth compatibility
         },
     })
 );
@@ -95,11 +95,21 @@ async function authenticateToken(req, res, next) {
 app.get("/auth/google", (req, res, next) => {
     console.log("=== Google OAuth Initiation ===");
     console.log("Initiated from:", req.headers.referer || req.headers.origin);
+    console.log("User Agent:", req.headers['user-agent']);
     console.log("Google Client ID available:", !!process.env.GOOGLE_CLIENT_ID);
     console.log("Callback URL:", `${process.env.BACKEND_URL}/auth/google/callback`);
+    console.log("Session ID:", req.sessionID);
+
+    // Validate required environment variables
+    if (!process.env.GOOGLE_CLIENT_ID || !process.env.GOOGLE_CLIENT_SECRET) {
+        console.error("Missing Google OAuth credentials");
+        return res.redirect(`${process.env.FRONTEND_URL}/login?error=oauth_config_missing`);
+    }
 
     passport.authenticate("google", {
-        scope: ["profile", "email"]
+        scope: ["profile", "email"],
+        accessType: 'offline',
+        prompt: 'consent'
     })(req, res, next);
 });
 
@@ -126,37 +136,66 @@ app.get("/debug/oauth-config", (req, res) => {
         frontendUrl: process.env.FRONTEND_URL,
         callbackUrl: `${process.env.BACKEND_URL}/auth/google/callback`,
         oauthInitUrl: `${process.env.BACKEND_URL}/auth/google`,
+        sessionSecret: process.env.SESSION_SECRET ? 'Set' : 'Missing',
+        jwtSecret: process.env.JWT_SECRET ? 'Set' : 'Missing',
+        nodeEnv: process.env.NODE_ENV,
         timestamp: new Date().toISOString()
     });
 });
 
+// Simple OAuth test endpoint
+app.get("/auth/google/test", (req, res) => {
+    res.json({
+        message: "OAuth test endpoint reached",
+        clientId: process.env.GOOGLE_CLIENT_ID ? 'Configured' : 'Missing',
+        callbackUrl: `${process.env.BACKEND_URL}/auth/google/callback`,
+        frontendUrl: process.env.FRONTEND_URL,
+        timestamp: new Date().toISOString(),
+        instructions: "Visit /auth/google to start OAuth flow"
+    });
+});
+
 app.get("/auth/google/callback",
-    passport.authenticate("google", {
-        failureRedirect: `${process.env.FRONTEND_URL}/login?error=oauth_failed`,
-        session: false
-    }),
+    (req, res, next) => {
+        console.log("=== OAuth Callback Received ===");
+        console.log("Query params:", req.query);
+        console.log("Session ID:", req.sessionID);
+
+        passport.authenticate("google", {
+            failureRedirect: `${process.env.FRONTEND_URL}/login?error=oauth_failed`,
+            session: false
+        })(req, res, next);
+    },
     (req, res) => {
         try {
-            console.log("OAuth Success - User:", req.user?.email);
+            console.log("=== OAuth Authentication Success ===");
+            console.log("User:", req.user?.email);
+            console.log("User ID:", req.user?.id);
 
             if (!req.user) {
-                return res.redirect(`${process.env.FRONTEND_URL}/login?error=no_user`);
+                console.error("No user found in OAuth callback");
+                return res.redirect(`${process.env.FRONTEND_URL}/login?error=no_user_data`);
             }
 
-            // Generate simple JWT token
+            // Generate JWT token
             const token = jwt.sign(
-                { id: req.user.id, email: req.user.email },
+                {
+                    id: req.user.id,
+                    email: req.user.email,
+                    name: req.user.name
+                },
                 process.env.JWT_SECRET,
                 { expiresIn: "24h" }
             );
 
-            console.log("Token generated, redirecting to success page");
+            console.log("Token generated successfully");
+            console.log("Redirecting to:", `${process.env.FRONTEND_URL}/dashboard?token=${token.substring(0, 20)}...`);
 
             // Redirect to dashboard with token
             res.redirect(`${process.env.FRONTEND_URL}/dashboard?token=${token}`);
         } catch (error) {
-            console.error("OAuth callback error:", error);
-            res.redirect(`${process.env.FRONTEND_URL}/login?error=callback_failed`);
+            console.error("OAuth callback processing error:", error);
+            res.redirect(`${process.env.FRONTEND_URL}/login?error=callback_processing_failed&details=${encodeURIComponent(error.message)}`);
         }
     }
 );
@@ -219,13 +258,22 @@ app.post("/auth/register", async (req, res) => {
 });
 
 app.post("/auth/login", async (req, res) => {
+    console.log("=== Login Request Received ===");
+    console.log("Origin:", req.headers.origin);
+    console.log("User-Agent:", req.headers['user-agent']);
+    console.log("Content-Type:", req.headers['content-type']);
+    console.log("Request body:", { email: req.body?.email, passwordProvided: !!req.body?.password });
+
     const { email, password } = req.body;
 
     if (!email || !password) {
+        console.log("Login failed: Missing email or password");
         return res.status(400).json({ message: "Both email and password are required" });
     }
 
     try {
+        console.log("Checking user in database:", email);
+
         const { data: user, error } = await supabase
             .from("Users")
             .select("*")
@@ -233,11 +281,15 @@ app.post("/auth/login", async (req, res) => {
             .single();
 
         if (!user || error) {
-            return res.status(400).json({ message: "User not found" });
+            console.log("Login failed: User not found", error?.message);
+            return res.status(400).json({ message: "Invalid credentials" });
         }
+
+        console.log("User found:", { id: user.id, email: user.email, hasPassword: !!user.password });
 
         // Check if user has a password (not OAuth-only user)
         if (!user.password) {
+            console.log("Login failed: OAuth-only user attempting password login");
             return res.status(400).json({
                 message: "This account uses Google login. Please sign in with Google."
             });
@@ -245,6 +297,7 @@ app.post("/auth/login", async (req, res) => {
 
         const isMatch = await bcrypt.compare(password, user.password);
         if (!isMatch) {
+            console.log("Login failed: Password mismatch");
             return res.status(400).json({ message: "Invalid credentials" });
         }
 
@@ -254,6 +307,8 @@ app.post("/auth/login", async (req, res) => {
             process.env.JWT_SECRET,
             { expiresIn: "24h" }
         );
+
+        console.log("Login successful for user:", user.email);
 
         res.status(200).json({
             message: "Login successful",
